@@ -56,6 +56,10 @@ private slots:
     void onCursorPositionChanged(double wavelength, double flux);
     void onProcessingProgress(int current, int total);
 
+    void onLibraryMatch();
+    void onPopulationFit();
+    void onGenerateReport();
+
     void onAbout();
     void onDocumentation();
 
@@ -119,6 +123,10 @@ private:
     QAction *m_showGridAct;
     QAction *m_showContinuumAct;
     QAction *m_showLinesAct;
+
+    QAction *m_libraryMatchAct;
+    QAction *m_populationFitAct;
+    QAction *m_generateReportAct;
 
     QAction *m_aboutAct;
     QAction *m_docsAct;

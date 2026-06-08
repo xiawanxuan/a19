@@ -3,6 +3,9 @@
 #include "gui/CalibrationDialog.h"
 #include "gui/LineDetectionDialog.h"
 #include "gui/ExportDialog.h"
+#include "gui/SpectralLibraryMatchDialog.h"
+#include "gui/StellarPopulationDialog.h"
+#include "gui/ReportGeneratorDialog.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -183,6 +186,24 @@ void MainWindow::createActions()
     m_docsAct->setStatusTip(tr("View documentation"));
     connect(m_docsAct, &QAction::triggered,
             this, &MainWindow::onDocumentation);
+
+    m_libraryMatchAct = new QAction(tr("Spectral Library &Match..."), this);
+    m_libraryMatchAct->setStatusTip(tr("Match spectrum with template library"));
+    m_libraryMatchAct->setEnabled(false);
+    connect(m_libraryMatchAct, &QAction::triggered,
+            this, &MainWindow::onLibraryMatch);
+
+    m_populationFitAct = new QAction(tr("Stellar Population &Fit..."), this);
+    m_populationFitAct->setStatusTip(tr("Fit stellar population synthesis model"));
+    m_populationFitAct->setEnabled(false);
+    connect(m_populationFitAct, &QAction::triggered,
+            this, &MainWindow::onPopulationFit);
+
+    m_generateReportAct = new QAction(tr("Generate &Report..."), this);
+    m_generateReportAct->setStatusTip(tr("Generate analysis report"));
+    m_generateReportAct->setEnabled(false);
+    connect(m_generateReportAct, &QAction::triggered,
+            this, &MainWindow::onGenerateReport);
 }
 
 void MainWindow::createMenus()
@@ -203,6 +224,12 @@ void MainWindow::createMenus()
     processingMenu->addAction(m_smoothAct);
     processingMenu->addAction(m_normalizeAct);
     processingMenu->addAction(m_subtractContinuumAct);
+
+    QMenu *analysisMenu = menuBar()->addMenu(tr("&Analysis"));
+    analysisMenu->addAction(m_libraryMatchAct);
+    analysisMenu->addAction(m_populationFitAct);
+    analysisMenu->addSeparator();
+    analysisMenu->addAction(m_generateReportAct);
 
     QMenu *viewMenu = menuBar()->addMenu(tr("&View"));
     viewMenu->addAction(m_zoomInAct);
@@ -244,6 +271,13 @@ void MainWindow::createToolBars()
     m_viewToolBar->addAction(m_showContinuumAct);
     m_viewToolBar->addAction(m_showLinesAct);
     m_viewToolBar->setMovable(false);
+
+    QToolBar *analysisToolBar = addToolBar(tr("Analysis"));
+    analysisToolBar->addAction(m_libraryMatchAct);
+    analysisToolBar->addAction(m_populationFitAct);
+    analysisToolBar->addSeparator();
+    analysisToolBar->addAction(m_generateReportAct);
+    analysisToolBar->setMovable(false);
 }
 
 void MainWindow::createStatusBar()
@@ -381,6 +415,9 @@ void MainWindow::updateStatusInfo()
     m_smoothAct->setEnabled(m_currentIndex >= 0);
     m_normalizeAct->setEnabled(m_currentIndex >= 0);
     m_subtractContinuumAct->setEnabled(m_currentIndex >= 0);
+    m_libraryMatchAct->setEnabled(m_currentIndex >= 0);
+    m_populationFitAct->setEnabled(m_currentIndex >= 0);
+    m_generateReportAct->setEnabled(m_currentIndex >= 0);
 }
 
 SpectrumData& MainWindow::currentSpectrum()
@@ -626,14 +663,17 @@ void MainWindow::onAbout()
 {
     QMessageBox::about(this, tr("About Astro Spectrum Analyzer"),
         tr("<h3>Astro Spectrum Analyzer</h3>"
-           "<p>Version 1.0.0</p>"
+           "<p>Version 1.1.0</p>"
            "<p>A powerful tool for astronomical spectral data processing and analysis.</p>"
            "<p><b>Features:</b></p>"
            "<ul>"
            "<li>Batch import of spectral data (FITS, CSV, TXT, JSON)</li>"
-           "<li>Wavelength calibration</li>"
-           "<li>Spectral line detection and fitting</li>"
+           "<li>Wavelength calibration (linear, polynomial, spline)</li>"
+           "<li>Spectral line detection and fitting (Gaussian, Lorentzian, Voigt)</li>"
            "<li>Redshift measurement</li>"
+           "<li>Spectral library matching & object classification</li>"
+           "<li>Stellar population synthesis fitting</li>"
+           "<li>PDF analysis report generation</li>"
            "<li>Interactive visualization</li>"
            "<li>Analysis results export</li>"
            "</ul>"
@@ -678,7 +718,22 @@ void MainWindow::onDocumentation()
         "<h2>5. Redshift Measurement</h2>"
         "<p>Calculate redshift using <b>Processing > Redshift</b>. The tool uses cross-correlation or line matching methods.</p>"
 
-        "<h2>6. Visualization</h2>"
+        "<h2>6. Spectral Library Matching</h2>"
+        "<p>Use <b>Analysis > Spectral Library Match</b> to compare your spectrum with a library of standard templates "
+        "and automatically classify the object type. Supports multiple matching methods: cross-correlation, "
+        "chi-squared, correlation coefficient, and Euclidean distance.</p>"
+
+        "<h2>7. Stellar Population Fitting</h2>"
+        "<p>Use <b>Analysis > Stellar Population Fit</b> to perform stellar population synthesis analysis. "
+        "Fit the spectrum with a combination of simple stellar populations (SSP) to determine the age, "
+        "metallicity, and star formation history of the observed object.</p>"
+
+        "<h2>8. Report Generation</h2>"
+        "<p>Generate a comprehensive analysis report using <b>Analysis > Generate Report</b>. "
+        "Reports can be exported as PDF, HTML, or plain text format, and include spectrum plots, "
+        "spectral line tables, redshift information, library matching results, and population analysis.</p>"
+
+        "<h2>9. Visualization</h2>"
         "<ul>"
         "<li><b>Zoom:</b> Scroll with mouse wheel</li>"
         "<li><b>Pan:</b> Left-click and drag</li>"
@@ -688,10 +743,10 @@ void MainWindow::onDocumentation()
         "<li><b>Spectral Lines:</b> Toggle display and labels</li>"
         "</ul>"
 
-        "<h2>7. Exporting Results</h2>"
+        "<h2>10. Exporting Results</h2>"
         "<p>Use <b>File > Export</b> to save the current spectrum or all loaded spectra in various formats.</p>"
 
-        "<h2>8. Keyboard Shortcuts</h2>"
+        "<h2>11. Keyboard Shortcuts</h2>"
         "<ul>"
         "<li><b>Ctrl+O:</b> Import files</li>"
         "<li><b>Ctrl+S:</b> Export</li>"
@@ -710,4 +765,53 @@ void MainWindow::onDocumentation()
     layout->addWidget(buttonBox);
 
     docsDialog->exec();
+}
+
+void MainWindow::onLibraryMatch()
+{
+    if (m_currentIndex < 0) return;
+
+    SpectralLibraryMatchDialog dialog(this);
+    dialog.setSpectrum(m_spectra[m_currentIndex]);
+
+    if (dialog.exec() == QDialog::Accepted) {
+        SpectralLibraryMatcher::MatchResult best = dialog.bestMatch();
+        m_spectra[m_currentIndex].setObjectName(
+            SpectralLibraryMatcher::objectTypeName(best.objectType));
+
+        m_spectrumModel->updateSpectrum(m_currentIndex, m_spectra[m_currentIndex]);
+        m_statusLabel->setText(
+            QString("Library match: %1 (score=%2)")
+                .arg(best.templateName)
+                .arg(best.matchScore, 0, 'f', 4));
+    }
+}
+
+void MainWindow::onPopulationFit()
+{
+    if (m_currentIndex < 0) return;
+
+    StellarPopulationDialog dialog(this);
+    dialog.setSpectrum(m_spectra[m_currentIndex]);
+
+    if (dialog.exec() == QDialog::Accepted) {
+        StellarPopulationFitter::PopulationResult result = dialog.result();
+        m_statusLabel->setText(
+            QString("Population fit: age=%1, [Fe/H]=%2, χ²=%3")
+                .arg(StellarPopulationFitter::ageToString(result.meanAge))
+                .arg(result.meanMetallicity, 0, 'f', 2)
+                .arg(result.reducedChiSquared, 0, 'g', 4));
+    }
+}
+
+void MainWindow::onGenerateReport()
+{
+    if (m_currentIndex < 0) return;
+
+    ReportGeneratorDialog dialog(this);
+    dialog.setSpectrum(m_spectra[m_currentIndex]);
+
+    if (dialog.exec() == QDialog::Accepted) {
+        m_statusLabel->setText(tr("Report generated successfully"));
+    }
 }

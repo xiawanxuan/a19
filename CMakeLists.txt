@@ -23,6 +23,9 @@ set(SOURCES
     src/spectrum_processing/SpectrumProcessor.cpp
     src/visualization/SpectrumChartView.cpp
     src/visualization/SpectrumPlot.cpp
+    src/analysis/SpectralLibraryMatcher.cpp
+    src/analysis/StellarPopulationFitter.cpp
+    src/analysis/ReportGenerator.cpp
     src/gui/MainWindow.cpp
     src/gui/DataImportDialog.cpp
     src/gui/CalibrationDialog.cpp
@@ -30,6 +33,9 @@ set(SOURCES
     src/gui/ExportDialog.cpp
     src/gui/SpectralLineTableModel.cpp
     src/gui/SpectrumListModel.cpp
+    src/gui/SpectralLibraryMatchDialog.cpp
+    src/gui/StellarPopulationDialog.cpp
+    src/gui/ReportGeneratorDialog.cpp
 )
 
 set(HEADERS
@@ -41,6 +47,9 @@ set(HEADERS
     src/spectrum_processing/SpectrumProcessor.h
     src/visualization/SpectrumChartView.h
     src/visualization/SpectrumPlot.h
+    src/analysis/SpectralLibraryMatcher.h
+    src/analysis/StellarPopulationFitter.h
+    src/analysis/ReportGenerator.h
     src/gui/MainWindow.h
     src/gui/DataImportDialog.h
     src/gui/CalibrationDialog.h
@@ -48,6 +57,9 @@ set(HEADERS
     src/gui/ExportDialog.h
     src/gui/SpectralLineTableModel.h
     src/gui/SpectrumListModel.h
+    src/gui/SpectralLibraryMatchDialog.h
+    src/gui/StellarPopulationDialog.h
+    src/gui/ReportGeneratorDialog.h
 )
 
 set(RESOURCES
