@@ -1,12 +1,11 @@
 #include "WavelengthCalibrator.h"
 #include <QFile>
-#include <QTextStream>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
 #include <cmath>
 #include <algorithm>
-#include <QtMath>
+#include <QDebug>
 
 WavelengthCalibrator::WavelengthCalibrator(QObject *parent)
     : QObject(parent)
@@ -20,17 +19,28 @@ WavelengthCalibrator::WavelengthCalibrator(QObject *parent)
 void WavelengthCalibrator::setCalibrationPoints(const QVector<CalibrationPoint> &points)
 {
     m_points = points;
+    std::sort(m_points.begin(), m_points.end(),
+              [](const CalibrationPoint &a, const CalibrationPoint &b) {
+        return a.pixel < b.pixel;
+    });
     m_dirty = true;
     emit calibrationUpdated();
 }
 
-void WavelengthCalibrator::addCalibrationPoint(double pixel, double wavelength, const QString &name)
+void WavelengthCalibrator::addCalibrationPoint(double pixel, double wavelength,
+                                                const QString &name)
 {
-    CalibrationPoint point;
-    point.pixel = pixel;
-    point.wavelength = wavelength;
-    point.lineName = name;
-    m_points.append(point);
+    CalibrationPoint p;
+    p.pixel = pixel;
+    p.wavelength = wavelength;
+    p.lineName = name;
+    m_points.append(p);
+
+    std::sort(m_points.begin(), m_points.end(),
+              [](const CalibrationPoint &a, const CalibrationPoint &b) {
+        return a.pixel < b.pixel;
+    });
+
     m_dirty = true;
     emit calibrationUpdated();
 }
@@ -44,15 +54,19 @@ void WavelengthCalibrator::clearCalibrationPoints()
 {
     m_points.clear();
     m_coefficients.clear();
+    m_splineCoefficients.clear();
+    m_calibrationError = 0.0;
     m_dirty = true;
     emit calibrationUpdated();
 }
 
 void WavelengthCalibrator::setMethod(CalibrationMethod method)
 {
-    m_method = method;
-    m_dirty = true;
-    emit calibrationUpdated();
+    if (m_method != method) {
+        m_method = method;
+        m_dirty = true;
+        emit calibrationUpdated();
+    }
 }
 
 WavelengthCalibrator::CalibrationMethod WavelengthCalibrator::method() const
@@ -62,7 +76,9 @@ WavelengthCalibrator::CalibrationMethod WavelengthCalibrator::method() const
 
 void WavelengthCalibrator::setPolynomialOrder(int order)
 {
-    if (order >= 1 && order <= 10) {
+    if (order < 1) order = 1;
+    if (order > 10) order = 10;
+    if (m_polynomialOrder != order) {
         m_polynomialOrder = order;
         m_dirty = true;
         emit calibrationUpdated();
@@ -97,20 +113,22 @@ bool WavelengthCalibrator::calibrate(SpectrumData &spectrum)
     spectrum.setWavelengths(wavelengths);
     spectrum.setCalibrated(true);
 
-    for (SpectralLine &line : spectrum.spectralLines()) {
+    QVector<SpectralLine> lines = spectrum.spectralLines();
+    for (SpectralLine &line : lines) {
         double restWl = line.wavelength;
         line.wavelength = pixelToWavelength(restWl);
         if (line.restWavelength <= 0) {
             line.restWavelength = line.wavelength;
         }
     }
+    spectrum.setSpectralLines(lines);
 
     return true;
 }
 
 bool WavelengthCalibrator::calibratePixelArray(QVector<double> &pixels)
 {
-    if (!isReady() || m_dirty && !computeCoefficients()) {
+    if (!isReady() || (m_dirty && !computeCoefficients())) {
         return false;
     }
 
@@ -143,14 +161,30 @@ double WavelengthCalibrator::wavelengthToPixel(double wavelength) const
     double lo = m_points.first().pixel;
     double hi = m_points.last().pixel;
 
-    if (m_method == Linear && m_points.size() == 2) {
-        double p1 = m_points[0].pixel;
-        double w1 = m_points[0].wavelength;
-        double p2 = m_points[1].pixel;
-        double w2 = m_points[1].wavelength;
-        if (w2 != w1) {
-            return p1 + (wavelength - w1) * (p2 - p1) / (w2 - w1);
+    double wlLo = pixelToWavelength(lo);
+    double wlHi = pixelToWavelength(hi);
+
+    if (wlLo > wlHi) {
+        std::swap(lo, hi);
+        std::swap(wlLo, wlHi);
+    }
+
+    if (wavelength <= wlLo) {
+        double dx = m_points[1].pixel - m_points[0].pixel;
+        double dy = m_points[1].wavelength - m_points[0].wavelength;
+        if (std::abs(dy) > 1e-20) {
+            return m_points[0].pixel + (wavelength - m_points[0].wavelength) * dx / dy;
         }
+        return lo;
+    }
+    if (wavelength >= wlHi) {
+        int n = m_points.size();
+        double dx = m_points[n-1].pixel - m_points[n-2].pixel;
+        double dy = m_points[n-1].wavelength - m_points[n-2].wavelength;
+        if (std::abs(dy) > 1e-20) {
+            return m_points[n-1].pixel + (wavelength - m_points[n-1].wavelength) * dx / dy;
+        }
+        return hi;
     }
 
     for (int iter = 0; iter < 100; ++iter) {
@@ -265,6 +299,11 @@ bool WavelengthCalibrator::loadCalibrationFromFile(const QString &filePath)
         m_points.append(p);
     }
 
+    std::sort(m_points.begin(), m_points.end(),
+              [](const CalibrationPoint &a, const CalibrationPoint &b) {
+        return a.pixel < b.pixel;
+    });
+
     m_dirty = true;
     emit calibrationUpdated();
     return true;
@@ -302,6 +341,7 @@ bool WavelengthCalibrator::isReady() const
 {
     if (m_points.size() < 2) return false;
     if (m_method == Polynomial && m_points.size() < m_polynomialOrder + 1) return false;
+    if (m_method == Spline && m_points.size() < 4) return false;
     return true;
 }
 
@@ -328,7 +368,7 @@ bool WavelengthCalibrator::computeCoefficients()
             sumX2 += x[i] * x[i];
         }
         double denom = n * sumX2 - sumX * sumX;
-        if (denom == 0) return false;
+        if (std::abs(denom) < 1e-20) return false;
 
         double slope = (n * sumXY - sumX * sumY) / denom;
         double intercept = (sumY - slope * sumX) / n;
@@ -337,50 +377,86 @@ bool WavelengthCalibrator::computeCoefficients()
         m_coefficients.append(intercept);
         m_coefficients.append(slope);
 
+        m_xMean = 0.0;
+        m_xScale = 1.0;
+
         for (int i = 0; i < n; ++i) {
             double fitted = intercept + slope * x[i];
             totalError += (y[i] - fitted) * (y[i] - fitted);
         }
     } else if (m_method == Polynomial) {
         int order = qMin(m_polynomialOrder, n - 1);
-        m_coefficients = QVector<double>(order + 1, 0.0);
+
+        double xMean = 0.0, xMin = x[0], xMax = x[0];
+        for (int i = 0; i < n; ++i) {
+            xMean += x[i];
+            if (x[i] < xMin) xMin = x[i];
+            if (x[i] > xMax) xMax = x[i];
+        }
+        xMean /= n;
+        double xScale = (xMax - xMin) * 0.5;
+        if (xScale < 1e-20) xScale = 1.0;
+
+        m_xMean = xMean;
+        m_xScale = xScale;
+
+        QVector<double> xn(n);
+        for (int i = 0; i < n; ++i) {
+            xn[i] = (x[i] - xMean) / xScale;
+        }
+
+        QVector<QVector<double>> V(n, QVector<double>(order + 1, 0.0));
+        QVector<double> c(order + 1, 0.0);
+        QVector<double> dp(order + 1, 0.0);
+
+        for (int i = 0; i < n; ++i) {
+            V[i][0] = 1.0;
+            if (order >= 1) {
+                V[i][1] = xn[i];
+            }
+            for (int j = 2; j <= order; ++j) {
+                V[i][j] = xn[i] * V[i][j-1];
+            }
+        }
 
         QVector<QVector<double>> A(order + 1, QVector<double>(order + 1, 0.0));
         QVector<double> b(order + 1, 0.0);
 
-        QVector<double> xPowers(2 * order + 1, 0.0);
-        for (int i = 0; i < n; ++i) {
-            double px = 1.0;
-            for (int j = 0; j <= 2 * order; ++j) {
-                xPowers[j] += px;
-                px *= x[i];
-            }
-        }
-
         for (int i = 0; i <= order; ++i) {
             for (int j = 0; j <= order; ++j) {
-                A[i][j] = xPowers[i + j];
+                double sum = 0.0;
+                for (int k = 0; k < n; ++k) {
+                    sum += V[k][i] * V[k][j];
+                }
+                A[i][j] = sum;
             }
+            double sum = 0.0;
+            for (int k = 0; k < n; ++k) {
+                sum += V[k][i] * y[k];
+            }
+            b[i] = sum;
         }
 
-        for (int i = 0; i <= order; ++i) {
-            for (int j = 0; j < n; ++j) {
-                b[i] += y[j] * qPow(x[j], i);
-            }
-        }
+        QVector<int> pivot(order + 1);
+        for (int i = 0; i <= order; ++i) pivot[i] = i;
 
-        for (int k = 0; k < order; ++k) {
-            int pivot = k;
+        for (int k = 0; k <= order; ++k) {
+            int pivotRow = k;
             double maxVal = std::abs(A[k][k]);
             for (int i = k + 1; i <= order; ++i) {
                 if (std::abs(A[i][k]) > maxVal) {
                     maxVal = std::abs(A[i][k]);
-                    pivot = i;
+                    pivotRow = i;
                 }
             }
-            if (pivot != k) {
-                std::swap(A[k], A[pivot]);
-                std::swap(b[k], b[pivot]);
+            if (pivotRow != k) {
+                std::swap(A[k], A[pivotRow]);
+                std::swap(b[k], b[pivotRow]);
+                std::swap(pivot[k], pivot[pivotRow]);
+            }
+
+            if (std::abs(A[k][k]) < 1e-15) {
+                return false;
             }
 
             for (int i = k + 1; i <= order; ++i) {
@@ -392,19 +468,113 @@ bool WavelengthCalibrator::computeCoefficients()
             }
         }
 
+        QVector<double> cNorm(order + 1, 0.0);
         for (int i = order; i >= 0; --i) {
             double sum = b[i];
             for (int j = i + 1; j <= order; ++j) {
-                sum -= A[i][j] * m_coefficients[j];
+                sum -= A[i][j] * cNorm[j];
             }
-            m_coefficients[i] = sum / A[i][i];
+            cNorm[i] = sum / A[i][i];
+        }
+
+        m_coefficients = QVector<double>(order + 1, 0.0);
+        QVector<double> powXScale(order + 1, 1.0);
+        for (int i = 1; i <= order; ++i) {
+            powXScale[i] = powXScale[i-1] * xScale;
+        }
+
+        QVector<QVector<double>> binom(order + 1, QVector<double>(order + 1, 0.0));
+        for (int i = 0; i <= order; ++i) {
+            binom[i][0] = 1.0;
+            binom[i][i] = 1.0;
+            for (int j = 1; j < i; ++j) {
+                binom[i][j] = binom[i-1][j-1] + binom[i-1][j];
+            }
+        }
+
+        for (int i = 0; i <= order; ++i) {
+            double term = 0.0;
+            for (int k = i; k <= order; ++k) {
+                double sign = ((k - i) % 2 == 0) ? 1.0 : -1.0;
+                term += cNorm[k] * binom[k][i] * sign *
+                        std::pow(xMean, k - i) / powXScale[k];
+            }
+            m_coefficients[i] = term;
         }
 
         for (int i = 0; i < n; ++i) {
             double fitted = 0.0;
+            double px = 1.0;
             for (int j = 0; j <= order; ++j) {
-                fitted += m_coefficients[j] * qPow(x[i], j);
+                fitted += m_coefficients[j] * px;
+                px *= x[i];
             }
+            totalError += (y[i] - fitted) * (y[i] - fitted);
+        }
+    } else if (m_method == Spline) {
+        m_splineCoefficients.clear();
+
+        int nPts = m_points.size();
+        if (nPts < 4) {
+            m_method = Linear;
+            return computeCoefficients();
+        }
+
+        QVector<double> h(nPts - 1, 0.0);
+        for (int i = 0; i < nPts - 1; ++i) {
+            h[i] = x[i+1] - x[i];
+            if (std::abs(h[i]) < 1e-20) return false;
+        }
+
+        QVector<double> alpha(nPts - 1, 0.0);
+        for (int i = 1; i < nPts - 1; ++i) {
+            alpha[i] = 3.0 * (y[i+1] - y[i]) / h[i] -
+                        3.0 * (y[i] - y[i-1]) / h[i-1];
+        }
+
+        QVector<double> l(nPts, 0.0);
+        QVector<double> mu(nPts, 0.0);
+        QVector<double> z(nPts, 0.0);
+        QVector<double> c(nPts, 0.0);
+
+        l[0] = 1.0;
+        mu[0] = 0.0;
+        z[0] = 0.0;
+
+        for (int i = 1; i < nPts - 1; ++i) {
+            l[i] = 2.0 * (x[i+1] - x[i-1]) - h[i-1] * mu[i-1];
+            if (std::abs(l[i]) < 1e-20) return false;
+            mu[i] = h[i] / l[i];
+            z[i] = (alpha[i] - h[i-1] * z[i-1]) / l[i];
+        }
+
+        l[nPts-1] = 1.0;
+        z[nPts-1] = 0.0;
+        c[nPts-1] = 0.0;
+
+        for (int j = nPts - 2; j >= 0; --j) {
+            c[j] = z[j] - mu[j] * c[j+1];
+        }
+
+        QVector<double> b(nPts - 1, 0.0);
+        QVector<double> d(nPts - 1, 0.0);
+        for (int i = 0; i < nPts - 1; ++i) {
+            b[i] = (y[i+1] - y[i]) / h[i] - h[i] * (c[i+1] + 2.0 * c[i]) / 3.0;
+            d[i] = (c[i+1] - c[i]) / (3.0 * h[i]);
+        }
+
+        for (int i = 0; i < nPts - 1; ++i) {
+            SplineCoeffs coeffs;
+            coeffs.x0 = x[i];
+            coeffs.a = y[i];
+            coeffs.b = b[i];
+            coeffs.c = c[i];
+            coeffs.d = d[i];
+            m_splineCoefficients.append(coeffs);
+        }
+
+        for (int i = 0; i < n; ++i) {
+            double fitted = splineFit(x[i]);
             totalError += (y[i] - fitted) * (y[i] - fitted);
         }
     }
@@ -441,45 +611,42 @@ double WavelengthCalibrator::polynomialFit(double pixel) const
 
 double WavelengthCalibrator::splineFit(double pixel) const
 {
-    if (m_points.size() < 4) return linearFit(pixel);
-
     int n = m_points.size();
+    if (n < 4) return linearFit(pixel);
+
     if (pixel <= m_points.first().pixel) {
         double dx = m_points[1].pixel - m_points[0].pixel;
         double dy = m_points[1].wavelength - m_points[0].wavelength;
-        return m_points[0].wavelength + (pixel - m_points[0].pixel) * dy / dx;
+        if (std::abs(dx) > 1e-20) {
+            return m_points[0].wavelength + (pixel - m_points[0].pixel) * dy / dx;
+        }
+        return m_points[0].wavelength;
     }
     if (pixel >= m_points.last().pixel) {
         double dx = m_points[n-1].pixel - m_points[n-2].pixel;
         double dy = m_points[n-1].wavelength - m_points[n-2].wavelength;
-        return m_points[n-1].wavelength + (pixel - m_points[n-1].pixel) * dy / dx;
+        if (std::abs(dx) > 1e-20) {
+            return m_points[n-1].wavelength + (pixel - m_points[n-1].pixel) * dy / dx;
+        }
+        return m_points[n-1].wavelength;
     }
 
-    for (int i = 0; i < n - 1; ++i) {
-        if (pixel >= m_points[i].pixel && pixel <= m_points[i+1].pixel) {
-            double x0 = m_points[i].pixel;
-            double x1 = m_points[i+1].pixel;
-            double y0 = m_points[i].wavelength;
-            double y1 = m_points[i+1].wavelength;
-
-            double t = (pixel - x0) / (x1 - x0);
-            double y = y0 * (1 - t) + y1 * t;
-
-            if (i > 0 && i < n - 2) {
-                double x_1 = m_points[i-1].pixel;
-                double x2 = m_points[i+2].pixel;
-                double y_1 = m_points[i-1].wavelength;
-                double y2 = m_points[i+2].wavelength;
-
-                double d0 = (y1 - y_1) / (x1 - x_1) * (x1 - x0) / 6.0;
-                double d1 = (y2 - y0) / (x2 - x0) * (x1 - x0) / 6.0;
-
-                y += (3*t*t - 2*t*t*t - 1) * d0 + (t*t*t - t*t) * d1;
-            }
-
-            return y;
+    int lo = 0, hi = n - 1;
+    while (lo < hi - 1) {
+        int mid = (lo + hi) / 2;
+        if (pixel >= m_points[mid].pixel) {
+            lo = mid;
+        } else {
+            hi = mid;
         }
     }
+    int idx = lo;
 
-    return pixel;
+    if (idx >= m_splineCoefficients.size()) {
+        idx = m_splineCoefficients.size() - 1;
+    }
+
+    const SplineCoeffs &coeffs = m_splineCoefficients[idx];
+    double dx = pixel - coeffs.x0;
+    return coeffs.a + coeffs.b * dx + coeffs.c * dx * dx + coeffs.d * dx * dx * dx;
 }

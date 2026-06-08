@@ -279,7 +279,16 @@ SpectralLineFitter::FitResult SpectralLineFitter::fitLine(const QVector<double> 
         result.redChiSquared = chiSq / (wavelengths.size() - 3);
     }
 
-    result.area = amplitude * fwhm * std::sqrt(M_PI / std::log(2.0)) / 2.0;
+    if (m_lineType == Gaussian) {
+        result.area = amplitude * fwhm * std::sqrt(M_PI / std::log(2.0)) / 2.0;
+    } else if (m_lineType == Lorentzian) {
+        result.area = M_PI * amplitude * fwhm / 2.0;
+    } else if (m_lineType == Voigt) {
+        double voigtFraction = 0.5;
+        double areaGauss = amplitude * (1.0 - voigtFraction) * fwhm * std::sqrt(M_PI / std::log(2.0)) / 2.0;
+        double areaLorentz = amplitude * voigtFraction * M_PI * fwhm / 2.0;
+        result.area = areaGauss + areaLorentz;
+    }
 
     result.residuals.resize(wavelengths.size());
     for (int i = 0; i < wavelengths.size(); ++i) {
@@ -582,9 +591,13 @@ bool SpectralLineFitter::levenbergMarquardtFit(const QVector<double> &x, const Q
                                                double &center, double &amplitude, double &fwhm,
                                                double &chiSq)
 {
-    const int maxIterations = 100;
-    const double tolerance = 1e-8;
-    double lambda = 0.001;
+    const int maxIterations = 200;
+    const double tolerance = 1e-10;
+    double lambda = 0.01;
+    const double lambdaUp = 10.0;
+    const double lambdaDown = 0.1;
+    const double lambdaMin = 1e-7;
+    const double lambdaMax = 1e7;
 
     int n = x.size();
     chiSq = 0.0;
@@ -595,68 +608,128 @@ bool SpectralLineFitter::levenbergMarquardtFit(const QVector<double> &x, const Q
         chiSq += diff * diff;
     }
 
+    if (chiSq == 0.0) return true;
+
+    double voigtFraction = 0.5;
+
     for (int iter = 0; iter < maxIterations; ++iter) {
         double J00 = 0.0, J01 = 0.0, J02 = 0.0;
         double J11 = 0.0, J12 = 0.0, J22 = 0.0;
         double b0 = 0.0, b1 = 0.0, b2 = 0.0;
 
+        double gamma = fwhm / 2.0;
         double sigma = fwhmToSigma(fwhm);
+        double sigma2 = sigma * sigma;
+        double gamma2 = gamma * gamma;
+
+        double dfdFwhmScale = sigma / fwhm * std::sqrt(2.0 * std::log(2.0));
 
         for (int i = 0; i < n; ++i) {
             double dx = x[i] - center;
-            double expArg = -dx * dx / (2.0 * sigma * sigma);
-            double g = amplitude * std::exp(expArg);
+            double dx2 = dx * dx;
 
-            double dfdA = g / amplitude;
-            double dfdx = g * dx / (sigma * sigma);
-            double dfdfwhm = g * dx * dx / (sigma * sigma * sigma) * sigma / fwhm * std::sqrt(2.0 * std::log(2.0));
+            double dfdA = 0.0;
+            double dfddx = 0.0;
+            double dfdfwhm = 0.0;
+            double model = 0.0;
 
-            double residual = y[i] - g;
+            if (m_lineType == Gaussian) {
+                double expArg = -dx2 / (2.0 * sigma2);
+                double g = amplitude * std::exp(expArg);
+                model = g;
+
+                dfdA = g / amplitude;
+                dfddx = g * dx / sigma2;
+                dfdfwhm = g * dx2 / (sigma2 * sigma) * dfdFwhmScale;
+
+            } else if (m_lineType == Lorentzian) {
+                double denom = 1.0 + dx2 / gamma2;
+                double l = amplitude / denom;
+                model = l;
+
+                dfdA = 1.0 / denom;
+                dfddx = 2.0 * amplitude * dx / (gamma2 * denom * denom);
+                dfdfwhm = 2.0 * amplitude * dx2 / (gamma * gamma2 * denom * denom) * 0.5;
+
+            } else if (m_lineType == Voigt) {
+                double expArg = -dx2 / (2.0 * sigma2);
+                double g = amplitude * (1.0 - voigtFraction) * std::exp(expArg);
+                double denom = 1.0 + dx2 / gamma2;
+                double l = amplitude * voigtFraction / denom;
+                model = g + l;
+
+                double dfdA_g = (1.0 - voigtFraction) * std::exp(expArg);
+                double dfdA_l = voigtFraction / denom;
+                dfdA = dfdA_g + dfdA_l;
+
+                double dfddx_g = g * dx / sigma2;
+                double dfddx_l = 2.0 * amplitude * voigtFraction * dx / (gamma2 * denom * denom);
+                dfddx = dfddx_g + dfddx_l;
+
+                double dfdfwhm_g = g * dx2 / (sigma2 * sigma) * dfdFwhmScale;
+                double dfdfwhm_l = 2.0 * amplitude * voigtFraction * dx2 /
+                                   (gamma * gamma2 * denom * denom) * 0.5;
+                dfdfwhm = dfdfwhm_g + dfdfwhm_l;
+            }
+
+            double residual = y[i] - model;
 
             J00 += dfdA * dfdA;
-            J01 += dfdA * dfdx;
+            J01 += dfdA * dfddx;
             J02 += dfdA * dfdfwhm;
-            J11 += dfdx * dfdx;
-            J12 += dfdx * dfdfwhm;
+            J11 += dfddx * dfddx;
+            J12 += dfddx * dfdfwhm;
             J22 += dfdfwhm * dfdfwhm;
 
             b0 += dfdA * residual;
-            b1 += dfdx * residual;
+            b1 += dfddx * residual;
             b2 += dfdfwhm * residual;
         }
 
-        J00 *= 1 + lambda;
-        J11 *= 1 + lambda;
-        J22 *= 1 + lambda;
+        double diag0 = J00 * (1.0 + lambda);
+        double diag1 = J11 * (1.0 + lambda);
+        double diag2 = J22 * (1.0 + lambda);
 
-        double det = J00 * (J11 * J22 - J12 * J12) -
-                     J01 * (J01 * J22 - J02 * J12) +
-                     J02 * (J01 * J12 - J02 * J11);
+        double a00 = diag0, a01 = J01, a02 = J02;
+        double a11 = diag1, a12 = J12;
+        double a22 = diag2;
+        double r0 = b0, r1 = b1, r2 = b2;
 
-        if (std::abs(det) < 1e-20) {
-            return iter > 0;
+        double det = a00 * (a11 * a22 - a12 * a12) -
+                     a01 * (a01 * a22 - a02 * a12) +
+                     a02 * (a01 * a12 - a02 * a11);
+
+        if (std::abs(det) < 1e-30) {
+            lambda *= lambdaUp;
+            if (lambda > lambdaMax) return iter > 0;
+            continue;
         }
 
         double invDet = 1.0 / det;
 
-        double dA = (b0 * (J11 * J22 - J12 * J12) -
-                    b1 * (J01 * J22 - J02 * J12) +
-                    b2 * (J01 * J12 - J02 * J11)) * invDet;
+        double dA = (r0 * (a11 * a22 - a12 * a12) -
+                    r1 * (a01 * a22 - a02 * a12) +
+                    r2 * (a01 * a12 - a02 * a11)) * invDet;
 
-        double dx = (-b0 * (J01 * J22 - J02 * J12) +
-                    b1 * (J00 * J22 - J02 * J02) -
-                    b2 * (J00 * J12 - J01 * J02)) * invDet;
+        double dCenter = (-r0 * (a01 * a22 - a02 * a12) +
+                         r1 * (a00 * a22 - a02 * a02) -
+                         r2 * (a00 * a12 - a01 * a02)) * invDet;
 
-        double df = (b0 * (J01 * J12 - J02 * J11) -
-                    b1 * (J00 * J12 - J01 * J02) +
-                    b2 * (J00 * J11 - J01 * J01)) * invDet;
+        double dFwhm = (r0 * (a01 * a12 - a02 * a11) -
+                       r1 * (a00 * a12 - a01 * a02) +
+                       r2 * (a00 * a11 - a01 * a01)) * invDet;
 
-        double newCenter = center + dx;
+        double newCenter = center + dCenter;
         double newAmplitude = amplitude + dA;
-        double newFwhm = fwhm + df;
+        double newFwhm = fwhm + dFwhm;
 
         if (newFwhm < m_minLineWidth) newFwhm = m_minLineWidth;
         if (newFwhm > m_maxLineWidth) newFwhm = m_maxLineWidth;
+
+        if (std::abs(newAmplitude) > 1e10) {
+            lambda *= lambdaUp;
+            continue;
+        }
 
         double newChiSq = 0.0;
         for (int i = 0; i < n; ++i) {
@@ -673,13 +746,17 @@ bool SpectralLineFitter::levenbergMarquardtFit(const QVector<double> &x, const Q
             double delta = chiSq - newChiSq;
             chiSq = newChiSq;
 
-            lambda *= 0.1;
+            lambda = std::max(lambda * lambdaDown, lambdaMin);
 
             if (delta < tolerance * chiSq) {
                 return true;
             }
         } else {
-            lambda *= 10.0;
+            lambda = std::min(lambda * lambdaUp, lambdaMax);
+        }
+
+        if (lambda > lambdaMax) {
+            return chiSq > 0;
         }
     }
 

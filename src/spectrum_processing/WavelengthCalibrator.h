@@ -65,12 +65,23 @@ private:
     double polynomialFit(double pixel) const;
     double splineFit(double pixel) const;
 
+    struct SplineCoeffs {
+        double x0;
+        double a;
+        double b;
+        double c;
+        double d;
+    };
+
     QVector<CalibrationPoint> m_points;
     CalibrationMethod m_method;
     int m_polynomialOrder;
     QVector<double> m_coefficients;
+    QVector<SplineCoeffs> m_splineCoefficients;
     double m_calibrationError;
     bool m_dirty;
+    double m_xMean;
+    double m_xScale;
 };
 
 #endif // WAVELENGTHCALIBRATOR_H
